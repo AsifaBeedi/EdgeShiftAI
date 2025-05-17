@@ -1,27 +1,31 @@
 import time
+import random
 
 class TaskScheduler:
     def __init__(self, local_node):
         self.local_node = local_node
+        self.task_assignments = {}  # Store which device is handling which task
+        self.reassigned_tasks = set()  # Track tasks that were reassigned due to failures
         
     def get_device_scores(self):
         """Calculate capability scores for all available devices"""
         scores = {}
         
-        # Include local device
-        local_profile = self.local_node.get_profile()
-        scores[self.local_node.id] = self._calculate_device_score(local_profile)
+        # Include local device (if it's active)
+        if self.local_node.device_status == "Active":
+            local_profile = self.local_node.get_profile()
+            scores[self.local_node.id] = self._calculate_device_score(local_profile)
         
         # Include peers
         peers = self.local_node.get_available_peers()
         for peer_id, peer_info in peers.items():
-            if peer_info['profile']:
+            if peer_info['status'] == "Active" and peer_info['profile']:
                 scores[peer_id] = self._calculate_device_score(peer_info['profile'])
         
         return scores
     
     def _calculate_device_score(self, profile):
-        """Calculate a simple capability score based on device profile
+        """Calculate a capability score based on device profile
         Higher score = more available resources = better for tasks
         """
         if not profile:
@@ -114,40 +118,122 @@ class TaskScheduler:
                 if remaining_tasks <= 0:
                     break
         
-        return assignments
-    
-    def assign_image_partitions(self, image_data, num_partitions=2):
-        """Partition an image and assign parts to different devices
+        # Store assignments for potential reassignment later
+        self.task_assignments = assignments
         
-        For image classification/detection tasks, we can split the image
-        into sections and have different devices process each section.
+        return assignments
+        
+    def distribute_tasks_to_devices(self, task_assignments):
+        """Send tasks to their assigned devices
         
         Args:
-            image_data: Raw image data (bytes)
-            num_partitions: Number of sections to split into
+            task_assignments: Dictionary mapping device_ids to tasks
             
         Returns:
-            Dictionary mapping device_ids to their assigned image sections
+            Dictionary of device_id -> success status
         """
-        # Create task list with image partitions
-        tasks = []
+        results = {}
         
-        # Create equal divisions of the image (simplified)
-        # In a real implementation, you'd use numpy to actually split the image
-        for i in range(num_partitions):
-            tasks.append({
-                'id': f'partition_{i}',
-                'weight': 5,  # Medium weight
-                'data': {
-                    'type': 'image_partition',
-                    'partition_index': i,
-                    'total_partitions': num_partitions,
-                    'image_data': image_data  # In reality, just one section of the image
-                }
-            })
+        for device_id, tasks in task_assignments.items():
+            if device_id == self.local_node.id:
+                # Local tasks are handled directly
+                for task in tasks:
+                    self.local_node.tasks.append(task)
+                    # Process in background
+                    import threading
+                    threading.Thread(
+                        target=self.local_node._process_task, 
+                        args=(task,), 
+                        daemon=True
+                    ).start()
+                results[device_id] = True
+                continue
+                
+            # Send tasks to remote device
+            success = True
+            for task in tasks:
+                # Track which device is handling this task
+                task_id = task.get('id')
+                if not self.local_node.send_task_to_peer(device_id, task):
+                    success = False
+                    break
+                    
+            results[device_id] = success
             
-        # Distribute these tasks to devices
-        return self.distribute_tasks(tasks)
+        return results
+    
+    def check_device_health(self):
+        """Check all devices for failures"""
+        failed_devices = []
+        
+        # Check local device
+        if self.local_node.device_status != "Active":
+            failed_devices.append(self.local_node.id)
+            
+        # Check peer devices
+        peers = self.local_node.get_available_peers()
+        for peer_id, peer_info in peers.items():
+            if peer_info['status'] != "Active":
+                failed_devices.append(peer_id)
+            elif not self.local_node.check_peer_status(peer_id):
+                failed_devices.append(peer_id)
+                
+        return failed_devices
+    
+    def reassign_tasks(self, failed_devices):
+        """Reassign tasks from failed devices to healthy ones"""
+        if not failed_devices:
+            return {}
+            
+        # Collect tasks to reassign
+        tasks_to_reassign = []
+        for device_id in failed_devices:
+            if device_id in self.task_assignments:
+                tasks_to_reassign.extend(self.task_assignments[device_id])
+                del self.task_assignments[device_id]
+                
+        if not tasks_to_reassign:
+            return {}
+            
+        print(f"Reassigning {len(tasks_to_reassign)} tasks from failed devices")
+        
+        # Mark these tasks as reassigned
+        for task in tasks_to_reassign:
+            task_id = task.get('id')
+            self.reassigned_tasks.add(task_id)
+            
+        # Get scores for remaining healthy devices
+        device_scores = self.get_device_scores()
+        
+        # Remove failed devices from scores
+        for device_id in failed_devices:
+            if device_id in device_scores:
+                del device_scores[device_id]
+                
+        if not device_scores:
+            print("No healthy devices available for reassignment!")
+            return {}
+            
+        # Sort devices by score (highest first)
+        sorted_devices = sorted(device_scores.items(), 
+                               key=lambda x: x[1], reverse=True)
+        
+        # Simple round-robin assignment
+        reassignments = {}
+        for i, task in enumerate(tasks_to_reassign):
+            device_id = sorted_devices[i % len(sorted_devices)][0]
+            if device_id not in reassignments:
+                reassignments[device_id] = []
+            reassignments[device_id].append(task)
+            
+        # Update task assignments with new assignments
+        for device_id, tasks in reassignments.items():
+            if device_id in self.task_assignments:
+                self.task_assignments[device_id].extend(tasks)
+            else:
+                self.task_assignments[device_id] = tasks
+                
+        return reassignments
     
     def collect_results(self, task_assignments, timeout=30):
         """Collect results from all assigned tasks
@@ -165,22 +251,35 @@ class TaskScheduler:
         # Keep track of which devices we're waiting for
         pending_devices = list(task_assignments.keys())
         
+        # First collect from local device
+        if self.local_node.id in pending_devices:
+            # Get local results
+            local_results = self.local_node.results
+            results.update(local_results)
+            pending_devices.remove(self.local_node.id)
+        
         # Wait until timeout or all results collected
         while time.time() - start_time < timeout and pending_devices:
+            # Check for device failures
+            failed_devices = self.check_device_health()
+            if failed_devices:
+                # Reassign tasks from failed devices
+                reassignments = self.reassign_tasks(failed_devices)
+                if reassignments:
+                    # Distribute reassigned tasks
+                    self.distribute_tasks_to_devices(reassignments)
+                    
+                # Remove failed devices from pending list
+                for device_id in failed_devices:
+                    if device_id in pending_devices:
+                        pending_devices.remove(device_id)
+            
             # Try to collect from each pending device
             for device_id in list(pending_devices):  # Copy to avoid modification during iteration
-                if device_id == self.local_node.id:
-                    # Local tasks are handled differently (direct function call)
-                    # This would be implemented when integrating with the ML processing
-                    pending_devices.remove(device_id)
-                    continue
-                    
                 # Collect from remote device
-                response = self.local_node.collect_result_from_peer(device_id)
-                if response and response.get('status') != 'not_implemented_yet':
-                    # Got results from this device
-                    task_results = response.get('results', {})
-                    results.update(task_results)
+                device_results = self.local_node.collect_result_from_peer(device_id)
+                if device_results:
+                    results.update(device_results)
                     pending_devices.remove(device_id)
             
             # Wait a bit before next collection attempt
@@ -188,26 +287,44 @@ class TaskScheduler:
         
         return results
     
-    def distribute_tasks_to_devices(self, task_assignments):
-        """Send tasks to their assigned devices
+    def assign_image_partitions(self, image_path, num_partitions=None):
+        """Partition an image and assign parts to different devices
         
         Args:
-            task_assignments: Dictionary mapping device_ids to tasks
+            image_path: Path to the image file
+            num_partitions: Number of sections to split into (default: auto-determine)
             
         Returns:
-            Dictionary of device_id -> success status
+            Dictionary mapping device_ids to their assigned image sections
         """
-        results = {}
+        # Get available devices
+        device_scores = self.get_device_scores()
         
-        for device_id, tasks in task_assignments.items():
-            if device_id == self.local_node.id:
-                # Local tasks are handled differently (direct function call)
-                # This would be implemented when integrating with the ML processing
-                results[device_id] = True
-                continue
-                
-            # Send tasks to remote device
-            success = self.local_node.send_task_to_peer(device_id, tasks)
-            results[device_id] = success
+        # Auto-determine partitions if not specified
+        if num_partitions is None:
+            num_partitions = len(device_scores)
             
-        return results
+        if num_partitions <= 0:
+            num_partitions = 1
+        
+        # Create task list with image partitions
+        tasks = []
+        
+        # In a real implementation, you'd use PIL/OpenCV to split the image
+        # For demo, we'll just simulate it
+        for i in range(num_partitions):
+            task_id = f"img_{image_path.split('/')[-1]}_{i}"
+            tasks.append({
+                'id': task_id,
+                'weight': random.randint(3, 7),  # Randomize weights for demo
+                'data': {
+                    'type': 'image_partition',
+                    'partition_index': i,
+                    'total_partitions': num_partitions,
+                    'image_path': image_path
+                }
+            })
+            
+        # Distribute these tasks to devices
+        assignments = self.distribute_tasks(tasks)
+        return assignments

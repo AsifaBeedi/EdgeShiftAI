@@ -1,0 +1,5 @@
+
+pyzmq>=25.1.0
+psutil>=5.9.0
+gradio==3.50.2
+altair>=5.0.0
