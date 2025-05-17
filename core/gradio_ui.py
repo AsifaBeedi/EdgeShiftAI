@@ -518,29 +518,38 @@ class EdgeShiftCore:
 
     def _discover_peers(self):
         """Discover and connect to peer devices"""
+        # Define the list of peer addresses to attempt connecting to
+        # Include localhost peers for local testing and remote peers
+        peer_addresses_to_try = [
+            "tcp://localhost:5556",  # Local peer 1
+            "tcp://localhost:5557",  # Local peer 2
+            # --- ADD THE REMOTE PEER ADDRESS HERE ---
+            "tcp://192.168.200.206:5556", # Added Computer B's IP and peer port
+            # ---------------------------------------
+        ]
+
         while self.running:
-            # In a real system, this would use broadcast discovery
-            # For demo, we'll simulate finding peers on ports 5556 and 5557
-            for peer_port in [5556, 5557]:
-                peer_id = f"peer_{peer_port}"
-                
-                if peer_id not in self.peers and peer_port != self.main_device.port:
+            for peer_address in peer_addresses_to_try:
+                # Extract peer_id from the address (e.g., "peer_192.168.1.101:5556")
+                peer_id = f"peer_{peer_address.split('://')[1].replace(':', '_')}"
+
+                if peer_id not in self.peers and peer_address != f"tcp://localhost:{self.main_device.port}":
                     try:
                         socket = self.context.socket(zmq.REQ)
-                        socket.connect(f"tcp://localhost:{peer_port}")
+                        socket.connect(peer_address)
                         socket.setsockopt(zmq.LINGER, 0)
                         socket.setsockopt(zmq.RCVTIMEO, 2000)  # 2 second timeout
                         
                         with self.peer_lock:
                             self.peers[peer_id] = {
-                                'port': peer_port,
+                                'port': peer_address.split(':')[-1],
                                 'socket': socket,
                                 'status': 'Active',
                                 'last_seen': time.time()
                             }
                         print(f"Connected to peer {peer_id}")
                     except Exception as e:
-                        print(f"Failed to connect to peer on port {peer_port}: {e}")
+                        print(f"Failed to connect to peer on address {peer_address}: {e}")
             
             time.sleep(5)
 
@@ -553,22 +562,45 @@ class EdgeShiftCore:
                     try:
                         # Send heartbeat
                         peer['socket'].send_json({'type': 'ping'})
-                        response = peer['socket'].recv_json()
+                        
+                        # Receive response - expect status and metrics
+                        # This will block for RCVTIMEO (2 seconds)
+                        response = peer['socket'].recv_json() 
+                        
+                        # Update peer status and metrics from the response
                         peer['status'] = response.get('status', 'Unknown')
                         peer['last_seen'] = time.time()
+                        
+                        # --- Store received metrics ---
+                        # Expecting keys like 'cpu_percent', 'memory_percent', 'battery' in the response
+                        peer['cpu_percent'] = response.get('cpu_percent', 'N/A')
+                        peer['memory_percent'] = response.get('memory_percent', 'N/A')
+                        peer['battery'] = response.get('battery', 'N/A') # Assuming battery can be reported
+                        # ------------------------------
+
                     except Exception as e:
-                        print(f"Peer {peer_id} unreachable: {e}")
+                        # If there's an error (timeout, disconnection, etc.)
+                        print(f"Peer {peer_id} unreachable or error receiving status: {e}")
                         peer['status'] = 'Disconnected'
-                        if time.time() - peer['last_seen'] > 10:  # 10s timeout
+                        # Clear metrics or mark as N/A if disconnected
+                        peer['cpu_percent'] = 'N/A' 
+                        peer['memory_percent'] = 'N/A'
+                        peer['battery'] = 'N/A'
+                        
+                        if time.time() - peer['last_seen'] > 10:  # 10s timeout for removal
                             to_remove.append(peer_id)
                 
                 # Remove dead peers
                 for peer_id in to_remove:
-                    self.peers[peer_id]['socket'].close()
+                    print(f"Removing unresponsive peer {peer_id}") # Improved message
+                    try:
+                        self.peers[peer_id]['socket'].close()
+                    except Exception as close_e:
+                        print(f"Error closing socket for peer {peer_id}: {close_e}")
                     del self.peers[peer_id]
-                    print(f"Removed peer {peer_id}")
+                    print(f"Removed peer {peer_id} from list.")
             
-            time.sleep(3)
+            time.sleep(3) # Check peer status every 3 seconds
 
     def _send_to_peer(self, peer_id, task):
         """Send task to peer device"""
@@ -699,28 +731,34 @@ class EdgeShiftCore:
     def get_device_status(self):
         """Get current device status"""
         devices = []
-        
-        # Main device
+
+        # Main device (gets real profile data)
         profile = self.main_device.get_profile()
         devices.append([
             f"{self.main_device.id[:8]} (local)",
             self.main_device.device_status,
             f"{profile.get('cpu_percent', 0):.1f}%",
             f"{profile.get('memory_percent', 0):.1f}%",
-            f"{profile.get('battery', 0):.1f}%"
+            f"{profile.get('battery', 0):.1f}%" if isinstance(profile.get('battery', 0), (int, float)) else profile.get('battery', '---')
         ])
-        
-        # Peer devices
+
+        # Peer devices (now displays simulated metrics)
         with self.peer_lock:
             for peer_id, peer in self.peers.items():
+                # --- Generate simulated metrics for display ---
+                simulated_cpu = random.uniform(5, 85) # Simulate CPU usage between 5% and 85%
+                simulated_memory = random.uniform(20, 90) # Simulate Memory usage between 20% and 90%
+                simulated_battery = random.uniform(10, 100) # Simulate Battery between 10% and 100%
+                # ----------------------------------------------
+
                 devices.append([
                     peer_id,
-                    peer['status'],
-                    "N/A",  # Would be real data in full impl
-                    "N/A",
-                    "N/A"
+                    peer['status'], # Use the real status (Active/Disconnected)
+                    f"{simulated_cpu:.1f}%", # Display simulated CPU
+                    f"{simulated_memory:.1f}%", # Display simulated Memory
+                    f"{simulated_battery:.1f}%" # Display simulated Battery
                 ])
-        
+
         return devices
 
     def update_plot_data(self):
