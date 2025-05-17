@@ -8,10 +8,10 @@ import psutil
 class DeviceNode:
     """Represents a device in the network that can process tasks"""
     
-    def __init__(self, port=5555, is_coordinator=False):
+    def __init__(self, port=5555, broadcast_port=5556,is_coordinator=False):
         self.id = str(uuid.uuid4())
         self.port = port
-        self.broadcast_port = port + 1000  # For discovery
+        self.broadcast_port = broadcast_port# For discovery
         self.is_coordinator = is_coordinator
         self.device_status = "Initializing"
         self.running = False

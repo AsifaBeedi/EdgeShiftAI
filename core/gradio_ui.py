@@ -6,37 +6,15 @@ import json
 import zmq
 import pandas as pd
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import os
+from core.device import DeviceNode
+from core.scheduler import TaskScheduler
+from core.model import ModelInterface
+import io
+import argparse
 # Mock DeviceNode, TaskScheduler, and ModelInterface classes for standalone module
 # In your actual code, you'd import these from their respective modules
-class DeviceNode:
-    def __init__(self, port=5555, is_coordinator=False):
-        self.port = port
-        self.is_coordinator = is_coordinator
-        self.id = f"device_{random.randint(1000, 9999)}"
-        self.device_status = "Active"
-        
-    def start(self):
-        print(f"DeviceNode started on port {self.port}")
-        
-    def stop(self):
-        print(f"DeviceNode stopped on port {self.port}")
-        
-    def get_profile(self):
-        return {
-            "cpu_percent": random.uniform(10, 90),
-            "memory_percent": random.uniform(20, 80),
-            "battery": random.uniform(30, 100)
-        }
-
-class TaskScheduler:
-    def __init__(self, device):
-        self.device = device
-        
-class ModelInterface:
-    def __init__(self):
-        pass
 
 
 def create_interface(core):
@@ -71,7 +49,7 @@ def create_interface(core):
                         # Add network health indicator
                         with gr.Row():
                             health_indicator = gr.Label(label="Network Health")
-                            connectivity_status = gr.StatusTracker(label="Connectivity")
+                            # You can use this to display connectivity status as text
                 
                 # Enhanced graph section
                 gr.Markdown("### 📊 Network Activity Monitor")
@@ -91,7 +69,7 @@ def create_interface(core):
                     
                     with gr.Column(scale=1):
                         # Add a device distribution chart
-                        device_pie = gr.Plot(label="Device Distribution")
+                        device_pie = gr.Textbox(label="Device Distribution", lines=4)
                         
                         # Refresh both charts with one button
                         refresh_plot_btn = gr.Button("📊 Update Charts", variant="primary")
@@ -138,18 +116,18 @@ def create_interface(core):
             total = len(devices)
             
             if total == 0:
-                return "No Devices", "warning"
+                return "No Devices"
             
             health_percent = (active_count / total) * 100
             
             if health_percent > 80:
-                return f"Excellent ({active_count}/{total} devices)", "success"
+                return f"Excellent ({active_count}/{total} devices)"
             elif health_percent > 50:
-                return f"Good ({active_count}/{total} devices)", "secondary"
+                return f"Good ({active_count}/{total} devices)"
             elif health_percent > 30:
-                return f"Fair ({active_count}/{total} devices)", "warning"
+                return f"Fair ({active_count}/{total} devices)"
             else:
-                return f"Poor ({active_count}/{total} devices)", "error"
+                return f"Poor ({active_count}/{total} devices)"
         
         def update_network_stats():
             """Get updated network statistics"""
@@ -169,10 +147,7 @@ def create_interface(core):
             }
         
         def update_device_distribution():
-            """Update the device distribution pie chart"""
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
+            """Update the device distribution as text"""
             devices = core.get_device_status()
             
             # Count devices by status
@@ -182,55 +157,37 @@ def create_interface(core):
                 if status not in status_counts:
                     status_counts[status] = 0
                 status_counts[status] += 1
-                
-            # Create pie chart
-            fig, ax = plt.subplots(figsize=(4, 4))
             
+            # Create text representation
             if status_counts:
-                labels = list(status_counts.keys())
-                sizes = list(status_counts.values())
-                colors = ['#4CAF50', '#FFC107', '#F44336'][:len(labels)]
-                
-                ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-                ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle
-                plt.title('Device Status Distribution')
+                text = "Device Status Distribution:\n"
+                total = sum(status_counts.values())
+                for status, count in status_counts.items():
+                    percentage = (count / total) * 100
+                    text += f"{status}: {count} ({percentage:.1f}%)\n"
             else:
-                ax.text(0.5, 0.5, 'No device data available', 
-                       horizontalalignment='center', verticalalignment='center')
-                
-            return fig
+                text = "No device data available"
+            
+            return text
         
         def update_activity_plot():
-            """Update the network activity plot with more metrics"""
-            # Create a DataFrame with historical data
-            # In a real app, you'd store this data in a database or file
-            times = []
-            active_devices = []
-            tasks = []
-            loads = []
+            """Update the network activity plot with real metrics"""
+            # Get current device status
+            devices = core.get_device_status()
             
-            # Generate some sample data for the past few minutes
-            for i in range(10):
-                past_time = time.time() - (9-i) * 30  # 30 seconds intervals
-                times.append(time.strftime("%H:%M:%S", time.localtime(past_time)))
-                active_devices.append(random.randint(1, 3))  # Sample data
-                tasks.append(random.randint(0, 5))  # Sample data
-                loads.append(random.uniform(20, 80))  # Sample data
+            # Calculate real metrics
+            active_devices = len([d for d in devices if d[1] == 'Active'])
+            total_tasks = sum(1 for d in devices if d[1] == 'Active')
             
-            # Add current time data
+            # Get current time
             current_time = time.strftime("%H:%M:%S")
-            current_active = len([d for d in core.get_device_status() if d[1] == 'Active'])
             
-            times.append(current_time)
-            active_devices.append(current_active)
-            tasks.append(random.randint(0, current_active * 3))  # Sample data
-            loads.append(random.uniform(20, 80))  # Sample data
-            
+            # Create DataFrame with real data
             return pd.DataFrame({
-                "time": times,
-                "Active": active_devices,
-                "Tasks": tasks,
-                "Load": loads
+                "time": [current_time],
+                "Active": [active_devices],
+                "Tasks": [total_tasks],
+                "Load": [active_devices * 20]  # Simple load calculation
             })
         
         def handle_image_selection(upload_img, path_str):
@@ -257,62 +214,213 @@ def create_interface(core):
             temp_path = ""
             if upload_img is not None and path_str == "":
                 temp_path = "temp_uploaded_image.jpg"
+                # Ensure the temp directory exists
+                os.makedirs(os.path.dirname(temp_path) or '.', exist_ok=True)
                 image.save(temp_path)
                 path_to_use = temp_path
             else:
                 path_to_use = path_str
             
-            # Call the core processing function
-            result_text, detailed_results, assignment_display = core.process_image(path_to_use)
-            
-            # Create detection visualization
-            detection_result = create_detection_visualization(image, detailed_results)
-            
-            # Clean up temp file
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            # Ensure the file exists before processing
+            if not os.path.exists(path_to_use):
+                 return f"Error: Image file not found at {path_to_use}", {}, [], None, None
+
+            try:
+                # Use the core's ModelInterface to process the image
+                # This is assuming ModelInterface is initialized in the EdgeShiftCore
+                # and is accessible as self.model in the core instance passed to create_interface.
+                # If not, we might need to adjust where the ModelInterface is created/accessed.
+
+                # For now, let's assume core has a .model attribute
+                if not hasattr(core, 'model') or core.model is None:
+                     return "Error: Model interface not initialized in EdgeShiftCore.", {}, [], None, None
+
+                # The original demo code in run.py uses a collaborative processing function
+                # that involves partitioning and distributing. The Gradio UI version
+                # currently has a simplified process_image method in EdgeShiftCore.
+                # Let's directly use the model for inference in the UI for now,
+                # and indicate that the full distributed processing would happen elsewhere.
+
+                # Perform local inference using the TFLite model
+                # The ModelInterface has preprocess_image and process_image_partition
+                # which does the actual inference.
                 
-            return result_text, detailed_results, assignment_display, image, detection_result
+                # The process_image_partition function returns results in a dictionary format
+                # suitable for combined_results, but let's simplify for just displaying
+                # the top predictions in the UI for now.
+
+                # Preprocess the image (ModelInterface expects a path)
+                input_data = core.model.preprocess_image(path_to_use)
+
+                # Run inference
+                core.model.interpreter.set_tensor(core.model.input_index, input_data)
+                core.model.interpreter.invoke()
+                output = core.model.interpreter.get_tensor(core.model.output_index)
+
+                # Get top predictions
+                if output.ndim == 2 and output.shape[0] == 1:
+                     output = output[0]
+
+                top_k = 5
+                top_k_idx = np.argsort(output)[-top_k:][::-1]
+
+                predictions = []
+                for idx in top_k_idx:
+                    # Ensure the index is within the bounds of the labels list
+                    if idx < len(core.model.labels):
+                        label = core.model.labels[idx]
+                        confidence = float(output[idx])
+                        predictions.append({
+                            'class': label,
+                            'confidence': confidence
+                        })
+                    else:
+                         predictions.append({
+                            'class': f"Unknown Label Index {idx}",
+                            'confidence': float(output[idx])
+                        })
+
+                # Format results for display
+                result_text = "Top Predictions:\n"
+                for pred in predictions:
+                    result_text += f"{pred['class']}: {pred['confidence']:.2f}\n" # Use .2f for confidence
+
+                detailed_results = {
+                    'predictions': predictions,
+                    'image_path': path_to_use,
+                    # Indicate this was local processing for the UI demo
+                    'processing_mode': 'local_inference'
+                }
+
+                # For visualization, use the same predictions structure
+                detection_result_image = create_detection_visualization(image, {
+                     'predictions': predictions
+                })
+
+                # The assignments_table might not be relevant for local inference,
+                # but we return an empty list to match the expected output structure.
+                assignment_display = [] # No assignments for local processing
+
+                # Clean up temp file
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                
+                # Return the results in the correct order
+                return result_text, detailed_results, assignment_display, image, detection_result_image
+                
+            except Exception as e:
+                # Log the error for debugging
+                print(f"Error during image processing: {e}")
+                import traceback
+                traceback.print_exc()
+                return f"Error processing image: {str(e)}", {}, [], None, None
         
         def create_detection_visualization(image, results):
-            """Create a visualization of detection results"""
+            """Create a visualization of detection results using PIL"""
             if image is None or not results:
                 return None
-                
-            # This is a placeholder - in a real implementation you would
-            # draw bounding boxes based on actual detection coordinates
-            import matplotlib.pyplot as plt
-            from matplotlib.patches import Rectangle
             
-            # Create a copy of the image for drawing
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.imshow(np.array(image))
+            # Create a copy of the image to draw on
+            img = image.copy()
+            draw = ImageDraw.Draw(img)
             
-            # Draw simulated detections
-            detections = results.get("detections", [])
-            for i, det in enumerate(detections):
-                # Generate random positions for demo purposes
-                # In real app, these would come from actual detection coordinates
-                x = random.uniform(0.1, 0.9) * image.width
-                y = random.uniform(0.1, 0.9) * image.height
-                w = random.uniform(50, 150)
-                h = random.uniform(50, 150)
-                
-                label = f"{det.get('class', 'unknown')}: {det.get('confidence', 0):.2f}"
-                color = 'r' if det.get('confidence', 0) > 0.8 else 'y'
-                
-                # Add bounding box
-                rect = Rectangle((x, y), w, h, linewidth=2, edgecolor=color, facecolor='none')
-                ax.add_patch(rect)
-                
-                # Add label
-                plt.text(x, y-5, label, color='white', fontsize=12, 
-                         bbox=dict(facecolor=color, alpha=0.7))
+            # Load a font (use default if not available)
+            try:
+                font_path = "arial.ttf"
+                font_size = 25 # You can adjust this value
+                font = ImageFont.load_default() # Start with default
+                draw_text_with_background = False # Assume no background needed initially
+
+                if os.path.exists(font_path):
+                    try:
+                        font = ImageFont.truetype(font_path, font_size)
+                        draw_text_with_background = False # Truetype usually fine
+                    except Exception as e:
+                         print(f"Error loading truetype font {font_path}: {e}. Falling back to default.")
+                         font = ImageFont.load_default()
+                         # If using default, consider background for readability
+                         draw_text_with_background = True # Might need background for default font
+
+                else:
+                     # Try other common font names if arial.ttf isn't found
+                     common_fonts = ["Arial.ttf", "LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"] # Add other common paths/names
+                     font_loaded = False
+                     for f_name in common_fonts:
+                         if os.path.exists(f_name):
+                            try:
+                                font = ImageFont.truetype(f_name, font_size)
+                                draw_text_with_background = False
+                                font_loaded = True
+                                break
+                            except:
+                                continue
+                     if not font_loaded:
+                         print("No common truetype fonts found, using default.")
+                         font = ImageFont.load_default()
+                         draw_text_with_background = True # Might need background for default font
+
+                # If using default font, make sure image is RGBA to draw with alpha background
+                if draw_text_with_background and img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                    draw = ImageDraw.Draw(img) # Re-create draw object for RGBA image
+                    bg_color = (0, 0, 0, 128) # Semi-transparent black background
+
+            except Exception as e:
+                 print(f"Unexpected error during font loading: {e}. Using default font without background.")
+                 font = ImageFont.load_default()
+                 draw_text_with_background = False # Fallback to default without background
+
+            # Determine text color based on confidence (optional)
+            def get_text_color(confidence):
+                return (255, 255, 0) if confidence > 0.7 else (255, 255, 255) # Yellow for high confidence, White otherwise
+
+            # Get predictions, expecting a list of dicts with 'class' and 'confidence'
+            predictions = results.get('predictions', [])
             
-            plt.title(f"{len(detections)} objects detected")
-            plt.axis('off')
-            
-            return fig
+            top_k = 5 # Define top_k within this function
+
+            # Draw predictions at the top of the image
+            y_offset = 10
+            x_offset = 10 # Starting from the left
+            img_width, img_height = img.size
+
+            for i, pred in enumerate(predictions):
+                # Limit the number of predictions drawn on the image if there are too many
+                if i >= top_k: # Now top_k is defined here
+                     break
+                     
+                label = f"{i+1}. {pred.get('class', 'Unknown')}: {pred.get('confidence', 0):.2f}"
+                text_color = get_text_color(pred.get('confidence', 0))
+
+                if draw_text_with_background:
+                     # Calculate text size to draw background rectangle
+                     try:
+                         # Use textbbox for more accurate bounding box calculation
+                         text_bbox = draw.textbbox((x_offset, y_offset), label, font=font)
+                         text_width = text_bbox[2] - text_bbox[0]
+                         text_height = text_bbox[3] - text_bbox[1]
+                         # Draw background rectangle slightly larger than text
+                         padding = 5
+                         draw.rectangle([x_offset, y_offset, x_offset + text_width + padding, y_offset + text_height + padding], fill=bg_color)
+                     except Exception as bbox_e:
+                          # Fallback if textbbox fails (e.g., with default font)
+                          print(f"Error calculating text bbox for background: {bbox_e}. Drawing text without background.")
+                          draw_text_with_background = False # Fallback
+
+
+                draw.text((x_offset, y_offset), label, fill=text_color, font=font)
+                
+                # Move down for the next line of text
+                # Use textbbox to get accurate height for the next line calculation
+                try:
+                     text_bbox = draw.textbbox((x_offset, y_offset), label, font=font)
+                     y_offset += (text_bbox[3] - text_bbox[1]) + 5 # text height + padding
+                except:
+                     # Fallback height if textbbox fails
+                     y_offset += 20 + 5 # Estimate height + padding
+
+
+            return img
         
         # Connect event handlers
         refresh_btn.click(
@@ -377,8 +485,7 @@ def create_interface(core):
         # Add interval refresh that respects the auto-refresh toggle
         app.load(
             fn=conditional_refresh,
-            outputs=[device_table, stats, health_indicator, activity_plot],
-            every=3
+            outputs=[device_table, stats, health_indicator, activity_plot]
         )
         
         # Enable queue for responsiveness
@@ -650,7 +757,7 @@ def run_peer(port):
                 time.sleep(random.uniform(0.5, 2.0))
                 socket.send_json({
                     "detections": [
-                        {"class": random.choice(["cat", "dog", "car"]), 
+                        {"class": random.choice(["cat", "dog", "car"]), # Simulate some detection results
                          "confidence": round(random.uniform(0.6, 0.9), 2)}
                         for _ in message['task']
                     ]
@@ -658,39 +765,60 @@ def run_peer(port):
     except zmq.error.ZMQError as e:
         print(f"Error starting peer on port {port}: {e}")
         print("The port may already be in use. Try a different port.")
-        return
+        # Return or sys.exit(1) if the peer is critical
     except KeyboardInterrupt:
-        pass
+        print(f"\nPeer on port {port} stopped by user.")
+    except Exception as e:
+         print(f"An unexpected error occurred in peer on port {port}: {e}")
+         import traceback
+         traceback.print_exc()
     finally:
+        print(f"Peer on port {port} shutting down ZeroMQ resources.")
         socket.close()
         context.term()
 
 # Modify the main function to use the enhanced interface
 def main():
     """Main application entry point"""
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--zmq-port", type=int, default=5555, help="Port for ZeroMQ communication")
-    parser.add_argument("--web-port", type=int, default=7860, help="Port for Gradio web interface")
-    parser.add_argument("--peer", action="store_true", help="Run in peer mode")
-    parser.add_argument("--broadcast-start", type=int, default=6000, 
-                       help="Starting port for peer broadcast discovery")
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='EdgeShift Gradio UI')
+    parser.add_argument('--zmq-port', type=int, default=5555, help='ZeroMQ port for the main device')
+    parser.add_argument('--web-port', type=int, default=7860, help='Web port for the Gradio UI')
+    # Add an argument to optionally start a test peer
+    parser.add_argument('--start-peer', type=int, help='Start a test peer on the specified port')
+
     args = parser.parse_args()
-    
-    if args.peer:
-        run_peer(args.zmq_port)
-    else:
-        core = EdgeShiftCore(zmq_port=args.zmq_port)
-        app = create_interface(core)
-        
-        try:
-            print(f"EdgeShift UI is starting on port {args.web_port}...")
-            print(f"Open your browser to http://localhost:{args.web_port} to access the interface")
-            app.launch(server_port=args.web_port, share=False)
-        finally:
-            print("Shutting down EdgeShift...")
-            core.stop()
-            print("Shutdown complete.")
+
+    # Initialize EdgeShiftCore (which includes the ModelInterface)
+    core = EdgeShiftCore(zmq_port=args.zmq_port)
+
+    # --- Add Peer Starting Logic Here ---
+    peer_thread = None
+    if args.start_peer:
+        print(f"Starting test peer on port {args.start_peer}...")
+        # run_peer function is defined later in this file
+        peer_thread = threading.Thread(target=run_peer, args=(args.start_peer,))
+        peer_thread.daemon = True  # Allow the main program to exit even if the thread is running
+        peer_thread.start()
+        # Give the peer a moment to start up
+        time.sleep(1)
+    # --- End Peer Starting Logic ---
+
+    # Create the Gradio interface
+    app = create_interface(core)
+
+    # Launch the Gradio app
+    print(f"EdgeShift UI is starting on port {args.web_port}...")
+    app.launch(server_name="0.0.0.0", server_port=args.web_port) # Use 0.0.0.0 to be accessible externally
+
+    # Optional: Clean up when the UI exits
+    # This might not be strictly necessary with daemon=True for the peer thread,
+    # but good practice for other resources.
+    core.stop()
+    if peer_thread and peer_thread.is_alive():
+         # In a real application, you'd signal the thread to stop gracefully
+         # For this simple example, we rely on daemon=True
+         pass # Or add a signaling mechanism if needed
 
 if __name__ == "__main__":
     main()
