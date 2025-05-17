@@ -1,24 +1,24 @@
 # EdgeShiftAI
 
-# 🧠 EdgeShiftAI - Real-Time Image Classifier using MobileNet (TFLite)
 
-EdgeShiftAI is a lightweight, real-time image classification app powered by TensorFlow Lite and MobileNet v1. It enables edge devices to predict image classes efficiently using a custom UI.
+**EdgeShiftAI** is a lightweight, peer-to-peer AI inference system designed to perform on-device machine learning tasks without relying on cloud services. This eliminates dependency on external servers, ensuring privacy, faster response times, and offline capabilities.
 
----
+## Key Features
 
-## 🚀 Features
+- **Peer-to-Peer Communication:** Devices communicate directly using ZeroMQ, enabling decentralized AI processing.
+- **Cloud-Independent:** No data leaves the local network, enhancing security and privacy.
+- **Efficient AI Inference:** Uses TensorFlow Lite models for fast, lightweight machine learning on edge devices.
+- **Simple User Interface:** Intuitive Gradio-based UI for easy interaction with the AI model.
 
-- 📦 Runs MobileNet v1 TFLite model for image classification
-- 🖼 Upload any image and view predicted class with index + label (e.g., "Dog", "Cat")
-- 🪶 Lightweight and fast, designed for edge inference
-- 🎨 Intuitive Gradio UI for interactive testing
+## How It Works
 
----
+- The model server runs locally and processes AI inference requests sent by client devices.
+- Communication happens via ZeroMQ sockets, facilitating real-time, low-latency data exchange.
+- The system supports image classification using quantized MobileNet models for efficient resource usage.
 
-## 🛠️ Setup
+## Setup & Usage
 
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/<your-username>/EdgeShiftAI.git
-cd EdgeShiftAI
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/AsifaBeedi/EdgeShiftAI.git
+   cd EdgeShiftAI
