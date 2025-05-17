@@ -18,11 +18,11 @@ This repository contains a basic implementation with a Gradio-based user interfa
 Based on the development work completed:
 
 1.  **Gradio User Interface:** A web-based UI is available to interact with the system.
-2.  **Network Status Monitoring:** The UI displays a list of detected/connected peer devices, their status (Active/Disconnected), and *real-time* metrics (CPU usage, Memory usage, Battery status) reported by peers.
+2.  **Network Status Monitoring:** The UI displays a list of detected/connected peer devices, their status (Active/Disconnected), and *real-time* metrics (CPU usage, Memory usage, Battery status) reported by peers (displaying simulated values if real data is not available).
 3.  **Basic Network Activity Plot:** A plot shows a simple representation of network activity based on the number of active devices (Task and Load metrics are currently simulated).
 4.  **Local Image Classification:** The "Image Processing" tab in the UI allows uploading an image and performing **local** TFLite image classification inference directly within the main UI node's process. The top predictions and a visualization are displayed.
 5.  **Peer Connectivity:** The Main UI Node is configured to actively attempt connections to specified peer addresses (including localhost and a configured remote IP like `192.168.200.206:5556`).
-6.  **Basic Peer Process:** A `run_peer` function is available to start a simple peer node that binds to a specified port, responds to pings with its real system metrics (CPU, Memory, Battery - requires `psutil`), and simulates processing tasks.
+6.  **Basic Peer Process:** A `run_peer` function is available to start a simple peer node that binds to a specified port, responds to pings (ideally with real system metrics, but currently displays are configured to show simulated values if needed), and simulates processing tasks.
 
 **Note:** The full distributed image processing pipeline (partitioning images and sending partitions to peers for inference, then combining results) is part of the core logic but not fully integrated with the UI's "Process Image" button in the current demo state. The UI performs inference locally for demonstration purposes.
 
@@ -78,22 +78,66 @@ pip install -r requirements.txt
 ### 5. Verification
 
 *   Check the terminal output on both Computer A and Computer B for connection success messages.
-*   Access the Gradio UI on Computer A (`http://localhost:7860`), go to the "Network Status" tab, and click the "🔄 Refresh" button. You should see an entry for the peer on Computer B's IP address with an 'Active' status and its real CPU, Memory, and Battery metrics (requires `psutil` to be working correctly on Computer B).
-
-## Dependencies
-
-The required dependencies are listed in the `requirements.txt` file. Key libraries include:
-
-*   `gradio`: For the web user interface.
-*   `pyzmq`: For ZeroMQ peer-to-peer communication.
-*   `tensorflow` / `tflite_runtime`: For loading and running the TFLite AI model.
-*   `psutil`: For collecting system metrics (CPU, Memory, Battery).
-*   `Pillow` (PIL): For image handling and visualization.
-*   `pandas`, `numpy`: For data handling and numerical operations.
+*   Access the Gradio UI on Computer A (`http://localhost:7860`), go to the "Network Status" tab, and click the "🔄 Refresh" button. You should see an entry for the peer on Computer B's IP address with an 'Active' status and its simulated (or real, if you modified the peer code) CPU, Memory, and Battery metrics.
 
 ## Diagrams
 
-*(Please add your system architecture and workflow diagrams here)*
+### SYSTEM DESIGN ARCHITECTURE
+
+```mermaid
+graph TD
+    A[User Browser] -->|HTTP/S| B(Gradio Web Server)
+    B -->|Calls Functions| C[EdgeShiftCore\nMain UI Node]
+    C -->|ZMQ REQ/REP| D[Peer Node 1]
+    C -->|ZMQ REQ/REP| E[Peer Node 2]
+    C -->|ZMQ REQ/REP| F[Peer Node N]
+    C -->|Uses| G[ModelInterface]
+    D -->|Uses| H[ModelInterface\n(Peer)]
+    E -->|Uses| H
+    F -->|Uses| H
+
+    %% Styling
+    style A fill:#e6f3ff,stroke:#333
+    style B fill:#ffe6e6,stroke:#333
+    style C fill:#e6ffe6,stroke:#333
+    style D,E,F fill:#fff2cc,stroke:#333
+    style G,H fill:#f8e1ff,stroke:#333
+```
+
+### USER INTERACTION FLOW (Current UI Demo)
+
+```mermaid
+graph TD
+    A[User Uploads/Selects Image] --> B{Click Process Image}
+    B --> C(Call process_image_wrapper)
+    C --> D(Handle Image File)
+    D --> E(core.model.preprocess_image)
+    E --> F(core.model.interpreter.invoke)
+    F --> G(Get Model Output Tensor)
+    G --> H{Get Top K Predictions & Labels}
+    H --> I(Format Results Text & JSON)
+    I --> J(Create Detection Visualization using PIL)
+    J --> K{Return Results to UI}
+    K --> L1[Update Results Summary]
+    K --> L2[Update Detailed Detection Results]
+    K --> L3[Update Image Preview]
+    K --> L4[Update Detection Results Image]
+
+    %% Styling and subgraph
+    style A fill:#e6f3ff,stroke:#333
+    style K fill:#ffe6e6,stroke:#333
+
+    subgraph "Local Inference (in UI Process)"
+        E
+        F
+        G
+        H
+        style E fill:#e6ffe6,stroke:#333
+        style F fill:#e6ffe6,stroke:#333
+        style G fill:#e6ffe6,stroke:#333
+        style H fill:#e6ffe6,stroke:#333
+    end
+```
 
 ## Authors and Contributors
 
@@ -102,4 +146,4 @@ The required dependencies are listed in the `requirements.txt` file. Key librari
 
 ## License
 
-*(Add your project's license information here)*
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
