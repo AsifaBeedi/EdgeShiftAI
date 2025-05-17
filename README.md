@@ -87,12 +87,12 @@ pip install -r requirements.txt
 ```mermaid
 graph TD
     A[User Browser] -->|HTTP/S| B(Gradio Web Server)
-    B -->|Calls Functions| C[EdgeShiftCore\nMain UI Node]
+    B -->|Calls Functions| C[EdgeShiftCore - Main UI Node]
     C -->|ZMQ REQ/REP| D[Peer Node 1]
     C -->|ZMQ REQ/REP| E[Peer Node 2]
     C -->|ZMQ REQ/REP| F[Peer Node N]
     C -->|Uses| G[ModelInterface]
-    D -->|Uses| H[ModelInterface\n(Peer)]
+    D -->|Uses| H[ModelInterface (Peer)]
     E -->|Uses| H
     F -->|Uses| H
 
