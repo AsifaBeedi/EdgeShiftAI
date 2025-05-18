@@ -610,6 +610,7 @@ class EdgeShiftCore:
             
             try:
                 peer = self.peers[peer_id]
+                # Send the actual image data to the peer
                 peer['socket'].send_json({
                     'type': 'task',
                     'task': task
@@ -625,10 +626,24 @@ class EdgeShiftCore:
             if not image_path.strip():
                 return "No image provided", {}, []
             
-            # Create partitions
+            # Load and split the image
+            image = Image.open(image_path)
+            width, height = image.size
+            
+            # Split image into two parts
+            left_half = image.crop((0, 0, width//2, height))
+            right_half = image.crop((width//2, 0, width, height))
+            
+            # Save temporary files for the partitions
+            left_path = "temp_left.jpg"
+            right_path = "temp_right.jpg"
+            left_half.save(left_path)
+            right_half.save(right_path)
+            
+            # Create partitions with actual image data
             partitions = [
-                {"id": f"part_{i}", "weight": random.randint(1, 3), "data": "..."}
-                for i in range(3)  # 3 partitions
+                {"id": "part_1", "weight": 1, "data": left_path},
+                {"id": "part_2", "weight": 1, "data": right_path}
             ]
             
             # Distribute tasks
@@ -645,6 +660,12 @@ class EdgeShiftCore:
                     peer_result = self._send_to_peer(peer_id, tasks)
                     if peer_result:
                         results[peer_id] = peer_result
+            
+            # Clean up temp files
+            if os.path.exists(left_path):
+                os.remove(left_path)
+            if os.path.exists(right_path):
+                os.remove(right_path)
             
             # Format results
             return self._format_results(results, assignments, time.time() - start_time)
@@ -694,14 +715,34 @@ class EdgeShiftCore:
 
     def _process_local(self, tasks):
         """Process tasks locally"""
-        time.sleep(0.5 * sum(t['weight'] for t in tasks))
-        return {
-            "detections": [
-                {"class": random.choice(["cat", "dog", "car"]), 
-                 "confidence": round(random.uniform(0.7, 0.95), 2)}
-                for _ in tasks
-            ]
-        }
+        results = []
+        for task in tasks:
+            # Get the image partition data
+            image_data = task.get('data')
+            if image_data:
+                # Process the image partition using the model
+                if hasattr(self, 'model') and self.model is not None:
+                    # Run inference on the partition
+                    input_data = self.model.preprocess_image(image_data)
+                    self.model.interpreter.set_tensor(self.model.input_index, input_data)
+                    self.model.interpreter.invoke()
+                    output = self.model.interpreter.get_tensor(self.model.output_index)
+                    
+                    # Get top predictions
+                    if output.ndim == 2 and output.shape[0] == 1:
+                        output = output[0]
+                    
+                    top_k = 3
+                    top_k_idx = np.argsort(output)[-top_k:][::-1]
+                    
+                    for idx in top_k_idx:
+                        if idx < len(self.model.labels):
+                            results.append({
+                                "class": self.model.labels[idx],
+                                "confidence": float(output[idx])
+                            })
+        
+        return {"detections": results}
 
     def _format_results(self, results, assignments, processing_time):
         """Format results for display"""
@@ -786,30 +827,49 @@ def run_peer(port):
         socket.bind(f"tcp://*:{port}")
         print(f"Peer running on port {port}")
         
+        # Initialize model for peer
+        model = ModelInterface()
+        
         while True:
             message = socket.recv_json()
             if message.get('type') == 'ping':
                 socket.send_json({'status': 'Active'})
             elif message.get('type') == 'task':
-                # Simulate processing
-                time.sleep(random.uniform(0.5, 2.0))
-                socket.send_json({
-                    "detections": [
-                        {"class": random.choice(["cat", "dog", "car"]), # Simulate some detection results
-                         "confidence": round(random.uniform(0.6, 0.9), 2)}
-                        for _ in message['task']
-                    ]
-                })
+                # Process actual image data
+                results = []
+                for task in message['task']:
+                    image_path = task.get('data')
+                    if image_path and os.path.exists(image_path):
+                        # Process the image using the model
+                        input_data = model.preprocess_image(image_path)
+                        model.interpreter.set_tensor(model.input_index, input_data)
+                        model.interpreter.invoke()
+                        output = model.interpreter.get_tensor(model.output_index)
+                        
+                        # Get top predictions
+                        if output.ndim == 2 and output.shape[0] == 1:
+                            output = output[0]
+                        
+                        top_k = 3
+                        top_k_idx = np.argsort(output)[-top_k:][::-1]
+                        
+                        for idx in top_k_idx:
+                            if idx < len(model.labels):
+                                results.append({
+                                    "class": model.labels[idx],
+                                    "confidence": float(output[idx])
+                                })
+                
+                socket.send_json({"detections": results})
     except zmq.error.ZMQError as e:
         print(f"Error starting peer on port {port}: {e}")
         print("The port may already be in use. Try a different port.")
-        # Return or sys.exit(1) if the peer is critical
     except KeyboardInterrupt:
         print(f"\nPeer on port {port} stopped by user.")
     except Exception as e:
-         print(f"An unexpected error occurred in peer on port {port}: {e}")
-         import traceback
-         traceback.print_exc()
+        print(f"An unexpected error occurred in peer on port {port}: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print(f"Peer on port {port} shutting down ZeroMQ resources.")
         socket.close()
